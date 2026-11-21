@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#c0392b">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Chinese Reader</title>
 <style>
@@ -81,7 +84,7 @@ main{padding:4px 18px 260px}
 #out{border-top:none;margin-top:6px}
 #out[hidden],#view[hidden]{display:none}
 #tts{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:6px 0 4px}#tts[hidden]{display:none}
-#spd{width:140px;padding:0;border:none;background:none;accent-color:var(--ac)}#spdv{font-size:14px;color:var(--mu);min-width:46px}
+#spd{width:140px;padding:0;border:none;background:none;accent-color:var(--ac)}#spdv{font-size:14px;color:var(--mu);min-width:46px}#vsel{max-width:220px;font-size:13px;padding:4px 8px}
 .credit{color:var(--mu);font-size:12px;line-height:1.5;margin-top:28px}.credit a{color:var(--mu)}
 .say{border:none;background:none;font-size:20px;padding:0 4px;cursor:pointer}
 #out,#out *{-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
@@ -120557,7 +120560,7 @@ window.claude={use:async()=>({json:async p=>{
 </head>
 <body>
 <header id="bar"><button id="back" hidden>‹</button><div id="ttl"></div><div id="acts"></div></header>
-<main><div id="view"></div><div id="tts" hidden><button id="play">▶ Listen</button><span class="lab">Speed</span><input type="range" id="spd" min="0.4" max="1.5" step="0.05" value="1" aria-label="Speed"><span id="spdv"></span></div><div id="out" class="tap" hidden></div></main>
+<main><div id="view"></div><div id="tts" hidden><button id="play">▶ Listen</button><span class="lab">Speed</span><input type="range" id="spd" min="0.4" max="1.5" step="0.05" value="1" aria-label="Speed"><span id="spdv"></span><select id="vsel" title="Voice" hidden></select></div><div id="out" class="tap" hidden></div></main>
 <div id="panel" hidden><div id="pin"><button id="pc" title="Close">✕</button><div id="pbody"></div></div></div>
 <script>
 const $=id=>document.getElementById(id);
@@ -120621,7 +120624,7 @@ function show(){
   const list=ts=>ts.map(x=>rw('data-t="'+x.id+'"',x.title,hz(x.text)+' characters')).join('');
   if(c.v==='home'){
     a=add;
-    h=S.nbs.filter(k=>k.parent==='hsk'&&cnt(k.id)>0).sort((a,b)=>a.id.localeCompare(b.id)).map(k=>rw('data-nb="'+k.id+'"',k.name,plural(cnt(k.id)))).join('')+list(S.texts.filter(x=>x.nb==='hsk'))+'<p class="credit">Some texts come from the “HSK 3.0 Graded Reader Corpus” by Alvaro Serrano (pinyora.com), licensed <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>. Changes: punctuation converted to Chinese style and levels assigned by my own measurement.</p>';
+    h=S.nbs.filter(k=>k.parent==='hsk'&&cnt(k.id)>0).sort((a,b)=>a.id.localeCompare(b.id)).map(k=>rw('data-nb="'+k.id+'"',k.name,plural(cnt(k.id)))).join('')+list(S.texts.filter(x=>x.nb==='hsk'))+'<p class="credit">Some texts come from the “HSK 3.0 Graded Reader Corpus” by Alvaro Serrano (pinyora.com), licensed <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>. Changes: punctuation converted to Chinese style and levels assigned by my own measurement.</p><p class=\"credit\">Word meanings: CC-CEDICT (cc-cedict.org), licensed CC BY-SA 4.0 and reformatted for this app. Pinyin: pinyin-pro (MIT).</p>';
   }else if(c.v==='nb'){
     const id=c.id,n=S.nbs.find(x=>x.id===id);
     t=n?n.name:id;
@@ -120793,9 +120796,19 @@ $('out').addEventListener('contextmenu',e=>e.preventDefault());
 const synth=window.speechSynthesis;
 let rate=1,rtok=0,sents=[],sidx=0,zhVoice=null;
 try{const r=parseFloat(localStorage.getItem('lector-rate'));if(r>=0.4&&r<=1.5)rate=r}catch(e){}
-function pickVoice(){const v=synth?synth.getVoices():[];zhVoice=v.find(x=>/^zh[-_]CN/i.test(x.lang))||v.find(x=>/^zh/i.test(x.lang))||null}
+let zhVoices=[];
+function pickVoice(){
+  if(!synth)return;
+  const sc=x=>(/natural|neural|online/i.test(x.name)?100:0)+(/premium|enhanced/i.test(x.name)?60:0)+(/google/i.test(x.name)?40:0)+(/^zh[-_](CN|Hans)/i.test(x.lang)?20:0)-(/compact/i.test(x.name)?30:0);
+  zhVoices=synth.getVoices().filter(x=>/^(zh[-_](CN|Hans|TW|Hant)|cmn)/i.test(x.lang)).sort((a,b)=>sc(b)-sc(a));
+  let sv='';try{sv=localStorage.getItem('lector-voice')||''}catch(e){}
+  zhVoice=zhVoices.find(x=>x.name===sv)||zhVoices[0]||null;
+  $('vsel').innerHTML=zhVoices.map(x=>'<option value="'+esc(x.name)+'">'+esc(x.name.replace(/^(Microsoft|Google) /,''))+'</option>').join('');
+  if(zhVoice)$('vsel').value=zhVoice.name;
+  $('vsel').hidden=zhVoices.length<2;
+}
 if(synth){pickVoice();synth.onvoiceschanged=pickVoice}
-function utter(t,st,en){const u=new SpeechSynthesisUtterance(t);u.lang='zh-CN';if(zhVoice)u.voice=zhVoice;u.rate=rate;if(st)u.onstart=st;if(en){u.onend=en;u.onerror=en}return u}
+function utter(t,st,en){const u=new SpeechSynthesisUtterance(t);u.lang=zhVoice?zhVoice.lang:'zh-CN';if(zhVoice)u.voice=zhVoice;u.rate=rate;if(st)u.onstart=st;if(en){u.onend=en;u.onerror=en}return u}
 const playLbl=on=>{$('play').textContent=on?'■ Stop':'▶ Listen'};
 function stopSay(){rtok++;if(synth)synth.cancel();playLbl(false)}
 function readFrom(i){
@@ -120809,6 +120822,7 @@ const spdLbl=()=>{$('spdv').textContent=(+rate.toFixed(2))+'×'};
 $('spd').value=rate;spdLbl();
 if(!synth){$('play').disabled=true;$('play').title='Your browser has no speech voice'}
 $('play').onclick=()=>{if($('play').textContent.startsWith('■'))stopSay();else readFrom(0)};
+$('vsel').onchange=()=>{zhVoice=zhVoices.find(x=>x.name===$('vsel').value)||zhVoice;try{localStorage.setItem('lector-voice',zhVoice.name)}catch(_){}if($('play').textContent.startsWith('■'))readFrom(sidx)};
 $('spd').oninput=()=>{rate=parseFloat($('spd').value);spdLbl()};
 $('spd').onchange=()=>{
   try{localStorage.setItem('lector-rate',String(rate))}catch(_){}
@@ -120821,5 +120835,6 @@ $('pbody').addEventListener('click',e=>{
 
 load();show();
 </script>
+<script>if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));</script>
 </body>
 </html>
