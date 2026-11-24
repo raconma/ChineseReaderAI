@@ -120854,48 +120854,84 @@ const synth=window.speechSynthesis;
 let rate=.9,rtok=0,sents=[],sidx=0,zhVoice=null;
 try{const r=parseFloat(localStorage.getItem('lector-rate'));if(r>=0.4&&r<=1.5)rate=r}catch(e){}
 let zhVoices=[];
+let useOnline=false,onlineBad=false,curAudio=null;
+const ONL='__online';
 function pickVoice(){
   if(!synth)return;
   // Rank voices: neural/online first, then enhanced, then Google/Apple good ones; old robotic desktop voices last
   const q=x=>{const n=x.name;let v=0;
     if(/natural|neural|online/i.test(n))v+=100;
-    if(/xiaoxiao|xiaoyi|yunxi|yunjian|yunyang|yunxia|xiaobei|xiaoni|hiugaai|hsiaochen|yunjhe|hsiaoyu/i.test(n))v+=90;
+    if(/xiaoxiao|xiaoyi|yunxi|yunjian|yunyang|yunxia/i.test(n))v+=90;
     if(/premium|enhanced|siri/i.test(n))v+=70;
     if(/google/i.test(n))v+=50;
-    if(/tingting|ting-ting|meijia|mei-jia|sinji|sin-ji|lilian|li-mu|yu-shu|shanshan|tian-tian|tiantian/i.test(n))v+=35;
-    if(/^zh[-_](CN|Hans)/i.test(x.lang)||/cmn/i.test(x.lang))v+=20;
-    if(!/^zh[-_](CN|Hans)|cmn/i.test(x.lang))v-=15;
+    if(/tingting|ting-ting|lilian|li-mu|yu-shu|shanshan|tian-tian|tiantian/i.test(n))v+=35;
     if(/compact|espeak|huihui|kangkang|yaoyao|zhiwei|hanhan|zhiyu/i.test(n))v-=40;
     if(x.localService===false)v+=10;
     return v};
   const tag=x=>{const v=q(x);return v>=90?'★★★ ':v>=45?'★★ ':v>=20?'★ ':''};
-  zhVoices=synth.getVoices().filter(x=>/^(zh[-_](CN|Hans|TW|Hant|HK)|cmn|yue)/i.test(x.lang)).sort((a,b)=>q(b)-q(a));
-  let sv='';try{sv=localStorage.getItem('lector-voice')||''}catch(e){}
-  zhVoice=zhVoices.find(x=>x.name===sv)||zhVoices[0]||null;
-  $('vsel').innerHTML=zhVoices.map(x=>'<option value="'+esc(x.name)+'">'+tag(x)+esc(x.name.replace(/^(Microsoft|Google) /,''))+'</option>').join('');
-  if(zhVoice)$('vsel').value=zhVoice.name;
-  $('vsel').hidden=zhVoices.length<1;
-  if(zhVoice&&q(zhVoice)<45){let seen='';try{seen=localStorage.getItem('lector-vhint')}catch(e){}
-    if(!seen){try{localStorage.setItem('lector-vhint','1')}catch(e){}
-      toast('Only a basic voice was found. For a natural one: iPhone → Settings › Accessibility › Spoken Content › Voices › Chinese (Enhanced/Premium) · Android → install Google Speech Services and a Chinese voice · Windows → use Edge (Natural voices) · Mac → System Settings › Spoken Content › Manage Voices',14000)}}
+  // Only standard Mandarin (Mainland): no Cantonese, Taiwan, Hong Kong or regional dialect voices
+  const std=x=>/^(zh|cmn)([-_]Hans)?([-_]CN)?$/i.test(x.lang)&&!/cantonese|yue|taiwan|hong ?kong|粤|台|香港|liaoning|shaanxi|dongbei|henan|hunan|sichuan|shandong|hiu|hsiao|wanlung|sinji|sin-ji|meijia|mei-jia/i.test(x.name);
+  zhVoices=synth.getVoices().filter(std).sort((a,b)=>q(b)-q(a));
+  let sv=null;try{sv=localStorage.getItem('lector-voice')}catch(e){}
+  const best=zhVoices[0]||null;
+  // No saved choice: use the online voice when the best device voice is only basic
+  useOnline=!onlineBad&&(sv===ONL||(sv===null&&(!best||q(best)<45)))&&navigator.onLine!==false;
+  zhVoice=zhVoices.find(x=>x.name===sv)||best;
+  $('vsel').innerHTML='<option value="'+ONL+'">☁ Online voice (needs internet)</option>'+zhVoices.map(x=>'<option value="'+esc(x.name)+'">'+tag(x)+esc(x.name.replace(/^(Microsoft|Google) /,''))+'</option>').join('');
+  $('vsel').value=useOnline?ONL:(zhVoice?zhVoice.name:ONL);
+  $('vsel').hidden=false;
 }
 if(synth){pickVoice();synth.onvoiceschanged=pickVoice}
 function utter(t,st,en){const u=new SpeechSynthesisUtterance(t);u.lang=zhVoice?zhVoice.lang:'zh-CN';if(zhVoice)u.voice=zhVoice;u.rate=rate;if(st)u.onstart=st;if(en){u.onend=en;u.onerror=en}return u}
 const playLbl=on=>{$('play').textContent=on?'■ Stop':'▶ Listen'};
-function stopSay(){rtok++;if(synth)synth.cancel();playLbl(false);hl(0,0)}
+function killAudio(){if(curAudio){const a=curAudio;curAudio=null;a.onended=a.onerror=a.onplay=null;try{a.pause()}catch(_){}}}
+function stopSay(){rtok++;killAudio();if(synth)synth.cancel();playLbl(false);hl(0,0)}
+function chunks(t){if(t.length<=150)return[t];const out=[];let cur='';for(const p of t.split(/(?<=[，、,])/)){if((cur+p).length>150&&cur){out.push(cur);cur=p}else cur+=p}if(cur)out.push(cur);return out}
+function onlineFail(texts,st,done,tk,k){
+  if(tk!==rtok)return;
+  onlineBad=true;useOnline=false;killAudio();
+  toast('Online voice unavailable — using your device voice.',4000);
+  try{localStorage.removeItem('lector-voice')}catch(_){}
+  pickVoice();
+  deviceSpeak(texts.slice(k),(j)=>st&&st(k+j),done,tk);
+}
+function onlineSpeak(texts,st,done,tk,k,j){
+  if(tk!==rtok)return;
+  if(k>=texts.length){done&&done();return}
+  const parts=chunks(texts[k]);
+  if(j>=parts.length)return onlineSpeak(texts,st,done,tk,k+1,0);
+  killAudio();
+  const a=new Audio('https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=zh-CN&q='+encodeURIComponent(parts[j]));
+  a.playbackRate=rate;curAudio=a;
+  a.onplay=()=>{if(tk===rtok&&j===0&&!a.__s){a.__s=1;st&&st(k)}};
+  a.onended=()=>onlineSpeak(texts,st,done,tk,k,j+1);
+  a.onerror=()=>onlineFail(texts,st,done,tk,k);
+  const pr=a.play();if(pr&&pr.catch)pr.catch(()=>{if(tk===rtok&&curAudio===a)onlineFail(texts,st,done,tk,k)});
+}
+function deviceSpeak(texts,st,done,tk){
+  const go=()=>{if(tk!==rtok)return;try{synth.resume()}catch(_){}
+    texts.forEach((t,k)=>{const u=utter(t,()=>{if(tk===rtok&&st)st(k)},k===texts.length-1?(e)=>{if(e&&e.error&&!/^(canceled|interrupted)$/.test(e.error))toast('No audio ('+e.error+'). Check the voice selector or your device volume.',5000);if(tk===rtok&&done)done()}:(e)=>{if(e&&e.error&&!/^(canceled|interrupted)$/.test(e.error)&&tk===rtok)toast('No audio ('+e.error+')',4000)});(window.__u=window.__u||[]).push(u);if(window.__u.length>20)window.__u.shift();synth.speak(u)})};
+  if(synth.speaking||synth.pending||synth.paused){try{synth.cancel()}catch(_){}setTimeout(go,120)}else go();
+}
+// Speak a list of texts in order. st(k) fires when text k starts; done() after the last one.
+function speakAll(texts,st,done){
+  const tk=++rtok;killAudio();
+  if(useOnline&&typeof Audio!=='undefined')onlineSpeak(texts,st,done,tk,0,0);
+  else if(synth)deviceSpeak(texts,st,done,tk);
+}
 function readFrom(i){
   if(!synth)return;
-  synth.cancel();const tk=++rtok;playLbl(true);
+  playLbl(true);
   sents=(paras.join('\n').match(/[^。！？；\n]+[。！？；]?/g)||[]).map(x=>x.trim()).filter(x=>/\p{Script=Han}/u.test(x));
   const cum=[0];sents.forEach(x=>cum.push(cum[cum.length-1]+(x.match(/\p{Script=Han}/gu)||[]).length));
   sidx=i;
-  sents.slice(i).forEach((t,k,a)=>synth.speak(utter(t,()=>{if(tk===rtok){sidx=i+k;hl(cum[i+k],cum[i+k+1])}},k===a.length-1?()=>{if(tk===rtok){playLbl(false);hl(0,0)}}:null)));
+  speakAll(sents.slice(i),k=>{sidx=i+k;hl(cum[i+k],cum[i+k+1])},()=>{playLbl(false);hl(0,0)});
 }
 const spdLbl=()=>{$('spdv').textContent=(+rate.toFixed(2))+'×'};
 $('spd').value=rate;spdLbl();
 if(!synth){$('play').disabled=true;$('play').title='Your browser has no speech voice'}
 $('play').onclick=()=>{if($('play').textContent.startsWith('■'))stopSay();else readFrom(0)};
-$('vsel').onchange=()=>{zhVoice=zhVoices.find(x=>x.name===$('vsel').value)||zhVoice;try{localStorage.setItem('lector-voice',zhVoice.name)}catch(_){}if($('play').textContent.startsWith('■'))readFrom(sidx)};
+$('vsel').onchange=()=>{const v=$('vsel').value;onlineBad=false;useOnline=v===ONL;if(!useOnline)zhVoice=zhVoices.find(x=>x.name===v)||zhVoice;try{localStorage.setItem('lector-voice',v)}catch(_){}if($('play').textContent.startsWith('■'))readFrom(sidx)};
 $('spd').oninput=()=>{rate=parseFloat($('spd').value);spdLbl()};
 $('spd').onchange=()=>{
   try{localStorage.setItem('lector-rate',String(rate))}catch(_){}
@@ -120903,7 +120939,7 @@ $('spd').onchange=()=>{
 };
 $('pbody').addEventListener('click',e=>{
   const b=e.target.closest('[data-say]');if(!b||!synth)return;
-  stopSay();synth.speak(utter(b.dataset.say));
+  stopSay();speakAll([b.dataset.say]);
 });
 
 
@@ -121025,12 +121061,7 @@ function prep(){
   Q.peek=false;Q.cur=(it&&it.k==='q')?mkQ(it):null;
   
 }
-function sayCh(t){
-  if(!synth||!t)return;
-  const go=()=>{const u=utter(t,null,e=>{if(e&&e.error&&!/^(canceled|interrupted)$/.test(e.error))toast('No audio ('+e.error+'). Check the voice selector or your device volume.',5000)});window.__u=u;try{synth.resume()}catch(_){}synth.speak(u)};
-  clearTimeout(sayCh.k);rtok++;
-  if(synth.speaking||synth.pending||synth.paused){try{synth.cancel()}catch(_){}sayCh.k=setTimeout(go,120)}else go();
-}
+function sayCh(t){if(!t)return;speakAll([t])}
 function autoSay(){const q=Q&&Q.cur;if(!q||q.picked>=0)return;if(q.type==='listen'||(S.study.auto&&q.type!=='char'))sayCh(q.ch)}
 function cardInfo(ch){
   const c=BY[ch];
